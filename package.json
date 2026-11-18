@@ -1,0 +1,11 @@
+{
+  "name": "qca2a",
+  "version": "0.1.0",
+  "description": "Client for the QC-Async-A2A hub: team broadcasts delivered to coding agents across time zones",
+  "license": "MIT",
+  "repository": "github:ZQC8848/QC-Async-A2A-Platform",
+  "type": "module",
+  "bin": { "qca2a": "cli/qca2a.mjs" },
+  "files": ["cli"],
+  "engines": { "node": ">=18" }
+}

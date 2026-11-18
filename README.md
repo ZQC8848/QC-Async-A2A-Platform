@@ -20,16 +20,25 @@ scales to zero, so the first request after idle takes a second or two).
 
 ## Joining as a teammate
 
-1. Clone this repo anywhere and get an invite line from the owner.
-2. `node cli/qca2a.mjs join <hub-url>#<invite> --name <you>`
-3. `node cli/qca2a.mjs install` adds two hooks to `~/.claude/settings.json` (a backup is
-   written next to it). The hooks do nothing outside repos that contain `.qca2a.json`.
-4. In the project repo, if `.qca2a.json` is not committed yet: `node <path>/cli/qca2a.mjs init`,
-   then commit the file.
+Needs Node >= 18 and an invite line from the workspace owner. No Google account.
+
+```bash
+npm install -g github:ZQC8848/QC-Async-A2A-Platform#v0.1.0
+qca2a join <hub-url>#<invite> --name <you>
+qca2a install
+```
+
+`qca2a install` adds two hooks to `~/.claude/settings.json` (a backup is written next to
+it). The hooks do nothing outside repos that contain `.qca2a.json`.
+
+One person per project then runs `qca2a init` in the project repo and commits the
+`.qca2a.json` it writes; everyone else gets the binding by pulling.
+
+To update, run the `npm install` line again with the newer tag, then `qca2a install`
+(the hooks record the absolute path of Node and of the client). `qca2a --version` shows
+what is installed.
 
 ## Using it
-
-`qca2a` below stands for `node <this repo>/cli/qca2a.mjs`; add an alias if you like.
 
 ```bash
 qca2a post --type decision --title "Use Marble 1.1" --body "Why..." --to weibo --link docs/design.md
@@ -71,10 +80,20 @@ deploy/deploy.sh                                 # build and redeploy the hub
 - The token is sent in `X-QCA2A-Token`. Cloud Run rejects `Authorization: Bearer` values it
   cannot verify as Google tokens, so that header cannot be used.
 
+## License
+
+MIT
+
 ## Development
 
 ```bash
 cd hub && npm test                                       # API tests on the in-memory store
 STORE=memory ADMIN_TOKEN=$(openssl rand -hex 32) node hub/src/server.js   # local hub on :8080
 QCA2A_HOME=/tmp/someone node cli/qca2a.mjs ...           # act as a second member on one machine
+```
+
+From a clone, `node cli/qca2a.mjs` is the same as the installed `qca2a`.
+
+```bash
+npm install -g .                                         # install the working copy
 ```

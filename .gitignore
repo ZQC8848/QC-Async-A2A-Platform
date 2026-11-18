@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.env
+!*.env.example
+.DS_Store
+# A repo that uses the hub commits its own .qca2a.json; credentials never live in a repo.
+credentials.json

@@ -4,7 +4,7 @@ Shared context for teams whose coding agents work in different time zones. A sma
 stores what teammates publish; a hook in each person's agent checks it when a conversation
 opens and while it runs, so updates reach the agent without anyone being online together.
 
-Status: **M1 done** (broadcasts, Claude Code). Session sharing, git mirroring, Codex and
+Status: **M1 done** (broadcasts, Claude Code, per-repo opt-in). Session sharing, git mirroring, Codex and
 Cursor are next; see [docs/design.md](docs/design.md).
 
 ## Parts
@@ -20,23 +20,29 @@ scales to zero, so the first request after idle takes a second or two).
 
 ## Joining as a teammate
 
-Needs Node >= 18 and an invite line from the workspace owner. No Google account.
+Needs Node >= 18, git, and an invite line from the workspace owner. No Google account.
 
 ```bash
-npm install -g github:ZQC8848/QC-Async-A2A-Platform#v0.1.0
+npm install -g github:ZQC8848/QC-Async-A2A-Platform#v0.2.0
 qca2a join <hub-url>#<invite> --name <you>
-qca2a install
+cd <the project repo>
+qca2a enable
 ```
 
-`qca2a install` adds two hooks to `~/.claude/settings.json` (a backup is written next to
-it). The hooks do nothing outside repos that contain `.qca2a.json`.
+`qca2a enable` is the opt-in, per repo and per machine. It writes two Claude Code hooks to
+that repo's `.claude/settings.local.json`, keeps the file out of git through
+`.git/info/exclude`, and records the repo in `~/.config/qca2a/enabled.json`. Nothing is
+added to user-level settings, so agents in your other projects have no hook at all.
+The hooks apply to new conversations started in the repo, its subdirectories and its git
+worktrees. `qca2a disable` removes them; `qca2a whoami` shows what is enabled.
 
-One person per project then runs `qca2a init` in the project repo and commits the
-`.qca2a.json` it writes; everyone else gets the binding by pulling.
+If the repo has no `.qca2a.json` yet, one person runs `qca2a init` there first and commits
+the file. That file only says which workspace the repo belongs to. It does not turn
+anything on for anyone: a teammate who has not run `qca2a enable` is not affected by it.
 
-To update, run the `npm install` line again with the newer tag, then `qca2a install`
-(the hooks record the absolute path of Node and of the client). `qca2a --version` shows
-what is installed.
+To update, run the `npm install` line again with the newer tag, then `qca2a enable` in
+each enabled repo (the hooks record the absolute path of Node and of the client).
+`qca2a --version` shows what is installed.
 
 ## Using it
 
@@ -74,6 +80,9 @@ deploy/deploy.sh                                 # build and redeploy the hub
   does not exist.
 - Tokens live in `~/.config/qca2a/credentials.json` (mode 0600), never in a repo.
   `.qca2a.json` holds only the hub URL and workspace id.
+- A hook acts only when three things hold on that machine: the repo was enabled there, it
+  still has a binding, and the binding names the workspace that was enabled. Someone
+  committing or changing a `.qca2a.json` cannot opt you in.
 - Posts from teammates are injected with a line saying they are reference material, not
   instructions.
 - The hub owner can read everything in every workspace. Tell people before inviting them.

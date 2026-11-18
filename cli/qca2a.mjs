@@ -9,24 +9,29 @@
 //   qca2a posts [--limit n]                      recent posts with read receipts
 //   qca2a show <post-id>                         print a post and mark it read
 //   qca2a read <post-id>...                      mark read without printing
-//   qca2a install [claude] | uninstall [claude]  add/remove the agent hooks (user level)
+//   qca2a enable | disable                      turn the agent hooks on/off for this repo, on this machine
 //   qca2a hook <tool> <event>                    hook entry point (reads the hook JSON on stdin)
 //   qca2a --version
 //   qca2a admin ws-create <name> | ws-list | invite <workspace-id> [--uses n] [--days n] | revoke <member-id>
 //
 // Files: the token lives in ~/.config/qca2a/credentials.json (never in a repo);
-// .qca2a.json in a repo holds only the hub URL and workspace id. A hook that runs in a
-// repo without .qca2a.json does nothing. QCA2A_HOME overrides the config directory.
+// .qca2a.json in a repo holds only the hub URL and workspace id and opts nobody in:
+// hooks exist only in repos where you ran `qca2a enable`, and they are written to that
+// repo's uncommitted local agent config, never to user-level settings.
+// QCA2A_HOME overrides the config directory.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const SELF = fileURLToPath(import.meta.url);
 const HOME = process.env.QCA2A_HOME || path.join(os.homedir(), '.config', 'qca2a');
 const CRED = path.join(HOME, 'credentials.json');
 const CACHE = path.join(HOME, 'cache.json');
+const ENABLED = path.join(HOME, 'enabled.json'); // { <main checkout path>: { hub, workspace, at } }
+const CLAUDE_LOCAL = path.join('.claude', 'settings.local.json');
 const BINDING = '.qca2a.json';
 const RECHECK_MS = 10 * 60_000; // in-conversation checks are at most this frequent
 const HOOK_BUDGET_MS = 2000;
@@ -44,7 +49,7 @@ if (cmd === '--version' || cmd === 'version') {
   console.log(JSON.parse(fs.readFileSync(path.join(path.dirname(SELF), '..', 'package.json'), 'utf8')).version);
   process.exit(0);
 }
-const commands = { join, init, whoami, post, inbox, posts, show, read, install, uninstall: () => install(true), hook, admin };
+const commands = { join, init, whoami, post, inbox, posts, show, read, enable, disable, hook, admin };
 if (!commands[cmd]) {
   console.log(fs.readFileSync(SELF, 'utf8').split('\n').slice(1, 17).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exit(cmd ? 1 : 0);
@@ -85,7 +90,8 @@ async function init() {
   if (!ws) throw new Error(`pass a workspace id (yours: ${workspaces.map((w) => `${w.id} "${w.name}"`).join(', ') || 'none'})`);
   const file = path.join(process.cwd(), BINDING);
   fs.writeFileSync(file, JSON.stringify({ hub, workspace: ws.id, name: ws.name }, null, 2) + '\n');
-  console.log(`Wrote ${file} -> "${ws.name}". Commit it so teammates' agents pick up the same workspace.`);
+  console.log(`Wrote ${file} -> "${ws.name}". Commit it so teammates get the same binding.`);
+  console.log('To turn the agent hooks on for this repo on this machine: qca2a enable');
 }
 
 async function whoami() {
@@ -98,6 +104,11 @@ async function whoami() {
   }
   const b = findBinding(process.cwd());
   console.log(b ? `This directory is bound to ${b.workspace} "${b.name}".` : 'This directory is not bound to a workspace.');
+  const root = repoRoot(process.cwd());
+  const on = root && loadJson(ENABLED, {})[root];
+  if (b) console.log(on && on.workspace === b.workspace ? `Hooks are enabled for this repo (since ${on.at.slice(0, 10)}).` : 'Hooks are not enabled for this repo on this machine (qca2a enable).');
+  const all = Object.entries(loadJson(ENABLED, {}));
+  if (all.length) console.log(`Enabled repos on this machine:\n${all.map(([r, e]) => `  ${r}  -> ${e.workspace}`).join('\n')}`);
 }
 
 async function post() {
@@ -176,14 +187,52 @@ async function admin() {
 
 // ---------------------------------------------------------------- hooks
 
-// Adds (or removes) the hook entries in the tool's user-level config. Idempotent: our old
-// entries are dropped first; everything else in the file is left as it is.
-async function install(remove = false) {
-  const tool = args[0] || 'claude';
-  if (tool !== 'claude') throw new Error(`only "claude" is supported so far (got "${tool}")`);
-  const file = path.join(os.homedir(), '.claude', 'settings.json');
+// A repo takes part only after `qca2a enable` ran in it on this machine. That writes the
+// hooks into the repo's own uncommitted Claude Code config (.claude/settings.local.json in
+// the main checkout, which Claude Code also applies in subdirectories and git worktrees)
+// and records the consent in ENABLED. Nothing is added to user-level settings, so agents
+// in other projects have no hook at all.
+async function enable() {
+  const root = repoRoot(process.cwd());
+  if (!root) throw new Error("run this inside the project's git repository");
+  const binding = findBinding(process.cwd()) || findBinding(root);
+  if (!binding) throw new Error(`this repo has no ${BINDING} yet. Run: qca2a init`);
+  if (!loadJson(CRED, { hubs: {} }).hubs[binding.hub]?.token) throw new Error(`you have not joined ${binding.hub}. Ask the owner for an invite, then: qca2a join <hub-url>#<invite> --name <you>`);
+
+  if (git(root, 'ls-files', '--error-unmatch', CLAUDE_LOCAL) !== null) {
+    throw new Error(`${CLAUDE_LOCAL} is committed in this repo, so hooks written there would reach teammates. Untrack it first: git rm --cached ${CLAUDE_LOCAL}`);
+  }
+  writeClaudeHooks(root, false);
+  if (git(root, 'check-ignore', '-q', CLAUDE_LOCAL) === null) {
+    const exclude = path.join(git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'info', 'exclude');
+    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    fs.appendFileSync(exclude, `\n# qca2a: local agent hooks, not for commit\n${CLAUDE_LOCAL.split(path.sep).join('/')}\n`);
+  }
+  const enabled = loadJson(ENABLED, {});
+  enabled[root] = { hub: binding.hub, workspace: binding.workspace, at: new Date().toISOString() };
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(ENABLED, JSON.stringify(enabled, null, 2) + '\n');
+  console.log(`Enabled for ${root} -> "${binding.name}" (Claude Code).`);
+  console.log(`Hooks are in ${CLAUDE_LOCAL} (not committed). They apply to new conversations in this repo, its subdirectories and its worktrees. Undo: qca2a disable`);
+}
+
+async function disable() {
+  const root = repoRoot(process.cwd());
+  if (!root) throw new Error("run this inside the project's git repository");
+  writeClaudeHooks(root, true);
+  const enabled = loadJson(ENABLED, {});
+  delete enabled[root];
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(ENABLED, JSON.stringify(enabled, null, 2) + '\n');
+  console.log(`Disabled for ${root}: hooks removed from ${CLAUDE_LOCAL}. Your token and the repo's ${BINDING} are untouched.`);
+}
+
+// Idempotent: our old entries are dropped first; everything else in the file stays.
+function writeClaudeHooks(root, remove) {
+  const file = path.join(root, CLAUDE_LOCAL);
+  const existed = fs.existsSync(file);
+  if (remove && !existed) return;
   const settings = loadJson(file, {});
-  if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.qca2a-backup`);
   settings.hooks ??= {};
   const ours = (h) => typeof h.command === 'string' && h.command.includes('qca2a.mjs') && h.command.includes(' hook ');
   for (const event of ['SessionStart', 'UserPromptSubmit']) {
@@ -193,9 +242,9 @@ async function install(remove = false) {
     else delete settings.hooks[event];
   }
   if (!Object.keys(settings.hooks).length) delete settings.hooks;
+  if (remove && !Object.keys(settings).length) return fs.rmSync(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
-  console.log(remove ? `Removed qca2a hooks from ${file}.` : `Installed qca2a hooks in ${file} (backup: settings.json.qca2a-backup). They only act in repos that contain ${BINDING}.`);
 }
 
 // Runs inside the agent's hook. Contract: finish within HOOK_BUDGET_MS, print nothing when
@@ -204,8 +253,14 @@ async function hook() {
   setTimeout(() => process.exit(0), HOOK_BUDGET_MS).unref();
   const [tool, event] = args;
   const input = JSON.parse((await readStdin()) || '{}');
-  const binding = findBinding(input.cwd || process.cwd());
-  if (!binding) return;
+  // Three conditions, all local: the repo was enabled on this machine, it is still bound,
+  // and it is bound to the workspace that was enabled (a changed binding needs a new enable).
+  const cwd = input.cwd || process.cwd();
+  const root = repoRoot(cwd);
+  const consent = root && loadJson(ENABLED, {})[root];
+  if (!consent) return;
+  const binding = findBinding(cwd) || findBinding(root);
+  if (!binding || binding.workspace !== consent.workspace || binding.hub !== consent.hub) return;
   const token = loadJson(CRED, { hubs: {} }).hubs[binding.hub]?.token;
   if (!token) return;
 
@@ -247,6 +302,21 @@ function context() {
   const token = loadJson(CRED, { hubs: {} }).hubs[binding.hub]?.token;
   if (!token) throw new Error(`no token for ${binding.hub}. Ask the owner for an invite, then: qca2a join <hub-url>#<invite> --name <you>`);
   return { binding, call: (method, p, body) => api(binding.hub, method, `/ws/${binding.workspace}${p}`, token, body) };
+}
+
+// Path of the main checkout, also when `dir` is a subdirectory or a linked worktree.
+function repoRoot(dir) {
+  const common = git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+  if (!common) return null;
+  return path.basename(common) === '.git' ? path.dirname(common) : git(dir, 'rev-parse', '--show-toplevel');
+}
+// Output of a git command, '' when it prints nothing, null when it fails.
+function git(dir, ...a) {
+  try {
+    return execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500 }).trim();
+  } catch {
+    return null;
+  }
 }
 
 function findBinding(dir) {

@@ -2,7 +2,9 @@
 
 2026-11-17。本文写于定名之前，文中的 `crew` 即现在的命令 `qca2a`，`.crew.json` 即 `.qca2a.json`。
 
-实现与本文的两处差异：token 放在 `X-QCA2A-Token` 请求头（Cloud Run 会拦截无法验证的 `Authorization: Bearer`）；已读状态记在每条广播的 `readBy` 上，而不是成员游标里。M1 已完成，状态见根目录 README。
+实现与本文第 3 节的一处差异：hook 不装在用户级。每个 repo 要在本机运行 `qca2a enable` 才参与，hook 写进该 repo 不提交的本地配置，绑定文件本身不代表同意（实测 Claude Code 会把主仓库的 `.claude/settings.local.json` 应用到子目录和 worktree）。
+
+另外两处差异：token 放在 `X-QCA2A-Token` 请求头（Cloud Run 会拦截无法验证的 `Authorization: Bearer`）；已读状态记在每条广播的 `readBy` 上，而不是成员游标里。M1 已完成，状态见根目录 README。
 
 ## 1. 目标与范围
 
